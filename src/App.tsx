@@ -15,15 +15,6 @@ interface Feedback { id: number; guest: string; rating: number; comment: string;
 // ─── Seed data ─────────────────────────────────────────────────────────────────
 const seedInquiries: Inquiry[] = [];
 
-const seedGallery: GalleryPhoto[] = [
-  { id: 1, url: "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600&h=450&fit=crop&auto=format", caption: "Palawan Underground River", category: "Destinations" },
-  { id: 2, url: "https://images.unsplash.com/photo-1537953773345-d172ccf13cf1?w=600&h=450&fit=crop&auto=format", caption: "Boracay White Beach", category: "Beaches" },
-  { id: 3, url: "https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?w=600&h=450&fit=crop&auto=format", caption: "Tokyo City Lights", category: "International" },
-  { id: 4, url: "https://images.unsplash.com/photo-1555400038-63f5ba517a47?w=600&h=450&fit=crop&auto=format", caption: "Bali Rice Terraces", category: "International" },
-  { id: 5, url: "https://images.unsplash.com/photo-1552733407-5d5c46c3bb3b?w=600&h=450&fit=crop&auto=format", caption: "Siargao Surfing", category: "Adventure" },
-  { id: 6, url: "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?w=600&h=450&fit=crop&auto=format", caption: "Luxury Resort Stay", category: "Accommodations" },
-];
-
 const seedFeedback: Feedback[] = [
   { id: 1, guest: "Maria Santos", rating: 5, comment: "World Viewcation made our Palawan trip unforgettable! Every detail was perfectly arranged.", date: "2026-08-28", approved: true },
   { id: 2, guest: "James Tan", rating: 4, comment: "Great service and very responsive team. The Japan package was well-organized.", date: "2026-08-20", approved: true },
@@ -690,26 +681,113 @@ function PromosPanel() {
 
 // ─── Gallery Management ──────────────────────────────────────────────────────────
 function GalleryPanel() {
-  const [photos, setPhotos] = useState<GalleryPhoto[]>(seedGallery);
+  const [photos, setPhotos] = useState<GalleryPhoto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ url: "", caption: "", category: "Destinations" });
+  const [form, setForm] = useState({ caption: "", category: "Destinations" });
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState("");
+  const [fileError, setFileError] = useState("");
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState("All");
   const fileRef = useRef<HTMLInputElement>(null);
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
 
   const categories = ["All", "Destinations", "Beaches", "International", "Adventure", "Accommodations"];
   const filtered = filter === "All" ? photos : photos.filter(p => p.category === filter);
 
-  const add = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.caption) return;
-    const url = form.url || `https://images.unsplash.com/photo-${Date.now() % 1000000000}?w=600&h=450&fit=crop`;
-    setPhotos(p => [...p, { id: Date.now(), url, caption: form.caption, category: form.category }]);
-    setForm({ url: "", caption: "", category: "Destinations" });
-    setShowForm(false);
+  useEffect(() => {
+    api("/api/admin/gallery")
+      .then(({ res, data }) => {
+        if (res.ok) setPhotos(data as GalleryPhoto[]);
+        else setLoadError("Couldn't load the gallery.");
+      })
+      .catch(() => setLoadError("Couldn't reach the server."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const resetForm = () => {
+    setForm({ caption: "", category: "Destinations" });
+    setFile(null);
+    setDims(null);
+    setPreview("");
+    setFileError("");
+    setFormError("");
+    if (fileRef.current) fileRef.current.value = "";
   };
 
-  const remove = (id: number) => setPhotos(p => p.filter(ph => ph.id !== id));
-  const setF = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files?.[0];
+    if (!picked) return;
+    setFileError("");
+
+    if (!["image/png", "image/jpeg", "image/webp"].includes(picked.type)) {
+      setFileError("Please choose a PNG, JPG, or WEBP image.");
+      e.target.value = "";
+      return;
+    }
+    if (picked.size > 8 * 1024 * 1024) {
+      setFileError("The photo must be 8 MB or smaller.");
+      e.target.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const url = ev.target?.result as string;
+      const img = new Image();
+      img.onload = () => setDims({ w: img.naturalWidth, h: img.naturalHeight });
+      img.src = url;
+      setFile(picked);
+      setPreview(url);
+    };
+    reader.onerror = () => setFileError("We couldn't read that image. Please try another file.");
+    reader.readAsDataURL(picked);
+  };
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError("");
+    if (!form.caption.trim()) { setFormError("Please enter a caption."); return; }
+    if (!file) { setFormError("Please choose a photo to upload."); return; }
+
+    setSaving(true);
+    try {
+      const body = new FormData();
+      body.append("caption", form.caption.trim());
+      body.append("category", form.category);
+      body.append("photo", file);
+      if (dims) {
+        body.append("width", String(dims.w));
+        body.append("height", String(dims.h));
+      }
+
+      const { res, data } = await api("/api/admin/gallery", { method: "POST", body });
+      if (!res.ok) { setFormError(data.error ?? "Couldn't save the photo. Please try again."); return; }
+      setPhotos(p => [data as GalleryPhoto, ...p]);
+      resetForm();
+      setShowForm(false);
+    } catch {
+      setFormError("Couldn't reach the server. Please check your connection.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (photo: GalleryPhoto) => {
+    if (!window.confirm(`Remove "${photo.caption}" from the gallery? This can't be undone.`)) return;
+    setActionError("");
+    try {
+      const { res, data } = await api(`/api/admin/gallery/${photo.id}`, { method: "DELETE" });
+      if (res.ok) setPhotos(p => p.filter(ph => ph.id !== photo.id));
+      else setActionError(data.error ?? "Couldn't remove the photo.");
+    } catch {
+      setActionError("Couldn't reach the server.");
+    }
+  };
 
   return (
     <div>
@@ -730,38 +808,48 @@ function GalleryPanel() {
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "16px", marginBottom: "16px" }}>
               <div>
                 <label className="form-label">Caption</label>
-                <input className="form-input" placeholder="e.g. Sunset at El Nido, Palawan" value={form.caption} onChange={setF("caption")} />
+                <input className="form-input" placeholder="e.g. Sunset at El Nido, Palawan" maxLength={160} value={form.caption} onChange={e => setForm(f => ({ ...f, caption: e.target.value }))} />
               </div>
               <div>
                 <label className="form-label">Category</label>
-                <select className="form-input" value={form.category} onChange={setF("category")} style={{ cursor: "pointer" }}>
+                <select className="form-input" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} style={{ cursor: "pointer" }}>
                   {categories.filter(c => c !== "All").map(c => <option key={c}>{c}</option>)}
                 </select>
               </div>
             </div>
+
             <div style={{ marginBottom: "20px" }}>
-              <label className="form-label">Image URL (or leave blank for placeholder)</label>
-              <input className="form-input" placeholder="https://images.unsplash.com/..." value={form.url} onChange={setF("url")} />
+              <label className="form-label">Photo</label>
+              <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={pickFile} style={{ display: "none" }} />
+              {preview ? (
+                <div style={{ display: "flex", gap: "16px", alignItems: "center", padding: "14px", border: "1.5px solid #d4e2f0", borderRadius: "12px", background: "#f8fbff" }}>
+                  <img src={preview} alt="Selected photo preview" style={{ width: "144px", height: "108px", objectFit: "cover", borderRadius: "8px", border: "1px solid #d4e2f0", background: "white" }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: "Poppins, sans-serif", fontSize: "13px", fontWeight: 600, color: "#1a2e4a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{file?.name}</div>
+                    <div style={{ fontSize: "12px", color: "#6b82a0", marginTop: "3px" }}>Photo ready to upload</div>
+                    <div style={{ display: "flex", gap: "8px", marginTop: "10px" }}>
+                      <button type="button" className="btn-outline" onClick={() => fileRef.current?.click()} style={{ padding: "6px 12px", fontSize: "11px" }}>Replace</button>
+                      <button type="button" onClick={() => { setFile(null); setDims(null); setPreview(""); if (fileRef.current) fileRef.current.value = ""; }} style={{ padding: "6px 12px", borderRadius: "8px", border: "none", background: "#fef2f2", color: "#b91c1c", fontFamily: "Poppins, sans-serif", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>Remove</button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <button type="button" onClick={() => fileRef.current?.click()}
+                  style={{ width: "100%", padding: "22px", borderRadius: "12px", border: "1.5px dashed #8fc8eb", background: "#f8fbff", color: "#1e4f91", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: "7px", fontFamily: "Poppins, sans-serif" }}>
+                  <Icon.Upload />
+                  <span style={{ fontSize: "13px", fontWeight: 600 }}>Upload photo</span>
+                  <span style={{ fontFamily: "Inter, sans-serif", fontSize: "12px", fontWeight: 400, color: "#6b82a0" }}>PNG, JPG, or WEBP up to 8 MB</span>
+                </button>
+              )}
+              {fileError && <div role="alert" style={{ color: "#b91c1c", fontSize: "12px", marginTop: "7px" }}>{fileError}</div>}
             </div>
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <button className="btn-green" type="submit">Save Photo</button>
-              <button type="button" className="btn-outline" onClick={() => fileRef.current?.click()} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                <Icon.Upload /> Upload from Device
-              </button>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  const reader = new FileReader();
-                  reader.onload = ev => setForm(f => ({ ...f, url: ev.target?.result as string }));
-                  reader.readAsDataURL(file);
-                }
-              }} />
-            </div>
+
+            {formError && <div role="alert" style={{ color: "#b91c1c", fontSize: "13px", marginBottom: "12px" }}>{formError}</div>}
+            <button className="btn-green" type="submit" disabled={saving}>{saving ? "Uploading…" : "Save Photo"}</button>
           </form>
         </div>
       )}
 
-      {/* Filter tabs */}
       <div style={{ display: "flex", gap: "8px", marginBottom: "20px", flexWrap: "wrap" }}>
         {categories.map(c => (
           <button key={c} onClick={() => setFilter(c)}
@@ -775,12 +863,14 @@ function GalleryPanel() {
         ))}
       </div>
 
+      {actionError && <div role="alert" style={{ color: "#b91c1c", fontSize: "13px", marginBottom: "12px" }}>{actionError}</div>}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px" }}>
         {filtered.map(photo => (
           <div key={photo.id} className="gallery-item">
             <img src={photo.url} alt={photo.caption} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             <div className="gallery-overlay">
-              <button onClick={() => remove(photo.id)}
+              <button onClick={() => remove(photo)}
                 style={{ background: "rgba(185,28,28,0.85)", border: "none", borderRadius: "8px", padding: "8px 14px", color: "white", cursor: "pointer", fontFamily: "Poppins, sans-serif", fontSize: "12px", fontWeight: 600, display: "flex", alignItems: "center", gap: "5px" }}>
                 <Icon.Trash /> Remove
               </button>
@@ -791,9 +881,21 @@ function GalleryPanel() {
             </div>
           </div>
         ))}
-        {filtered.length === 0 && (
+        {loading && (
           <div style={{ gridColumn: "1/-1" }}>
-            <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#6b82a0" }}>No photos in this category.</div>
+            <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#6b82a0" }}>Loading gallery…</div>
+          </div>
+        )}
+        {loadError && (
+          <div style={{ gridColumn: "1/-1" }}>
+            <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#b91c1c" }}>{loadError}</div>
+          </div>
+        )}
+        {!loading && !loadError && filtered.length === 0 && (
+          <div style={{ gridColumn: "1/-1" }}>
+            <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#6b82a0" }}>
+              {photos.length === 0 ? "No photos yet. Add your first photo above." : "No photos in this category."}
+            </div>
           </div>
         )}
       </div>
