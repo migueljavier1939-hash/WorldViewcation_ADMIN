@@ -15,12 +15,6 @@ interface Feedback { id: number; guest: string; rating: number; comment: string;
 // ─── Seed data ─────────────────────────────────────────────────────────────────
 const seedInquiries: Inquiry[] = [];
 
-const seedPromos: Promo[] = [
-  { id: 1, title: "Summer Escape Package", destination: "Palawan", discount: "20% off", validUntil: "2026-10-31", active: true },
-  { id: 2, title: "Asia Explorer Bundle", destination: "Japan + Korea", discount: "₱5,000 off", validUntil: "2026-11-15", active: true },
-  { id: 3, title: "Honeymoon Special", destination: "Bali, Indonesia", discount: "15% off", validUntil: "2026-09-30", active: false },
-];
-
 const seedGallery: GalleryPhoto[] = [
   { id: 1, url: "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600&h=450&fit=crop&auto=format", caption: "Palawan Underground River", category: "Destinations" },
   { id: 2, url: "https://images.unsplash.com/photo-1537953773345-d172ccf13cf1?w=600&h=450&fit=crop&auto=format", caption: "Boracay White Beach", category: "Beaches" },
@@ -429,23 +423,75 @@ function DashboardHome({ user, inquiries }: { user: User; inquiries: Inquiry[] }
 }
 
 // ─── Promo Creation ──────────────────────────────────────────────────────────────
+async function api(url: string, init?: RequestInit) {
+  const res = await fetch(url, init);
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) window.location.reload(); // session expired, so the login screen shows
+  return { res, data };
+}
+
 function PromosPanel() {
-  const [promos, setPromos] = useState<Promo[]>(seedPromos);
+  const [promos, setPromos] = useState<Promo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [form, setForm] = useState({ title: "", destination: "", discount: "", validUntil: "", photo: "" });
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [photoName, setPhotoName] = useState("");
   const [photoError, setPhotoError] = useState("");
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
   const photoRef = useRef<HTMLInputElement>(null);
 
-  const add = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.title || !form.destination || !form.discount || !form.validUntil) return;
-    setPromos(p => [...p, { ...form, id: Date.now(), active: true }]);
+  useEffect(() => {
+    api("/api/admin/promos")
+      .then(({ res, data }) => {
+        if (res.ok) setPromos(data as Promo[]);
+        else setLoadError("Couldn't load the promos.");
+      })
+      .catch(() => setLoadError("Couldn't reach the server."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const resetForm = () => {
     setForm({ title: "", destination: "", discount: "", validUntil: "", photo: "" });
+    setPhotoFile(null);
     setPhotoName("");
     setPhotoError("");
+    setFormError("");
     if (photoRef.current) photoRef.current.value = "";
-    setShowForm(false);
+  };
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError("");
+    if (!form.title || !form.destination || !form.discount || !form.validUntil) {
+      setFormError("Please fill in all fields.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const body = new FormData();
+      body.append("title", form.title);
+      body.append("destination", form.destination);
+      body.append("discount", form.discount);
+      body.append("validUntil", form.validUntil);
+      if (photoFile) body.append("photo", photoFile);
+
+      const { res, data } = await api("/api/admin/promos", { method: "POST", body });
+      if (!res.ok) {
+        setFormError(data.error ?? "Couldn't save the promo. Please try again.");
+        return;
+      }
+      setPromos(p => [data as Promo, ...p]);
+      resetForm();
+      setShowForm(false);
+    } catch {
+      setFormError("Couldn't reach the server. Please check your connection.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const uploadPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -467,6 +513,7 @@ function PromosPanel() {
     const reader = new FileReader();
     reader.onload = event => {
       setForm(current => ({ ...current, photo: event.target?.result as string }));
+      setPhotoFile(file);
       setPhotoName(file.name);
     };
     reader.onerror = () => setPhotoError("We couldn't read that image. Please try another file.");
@@ -475,13 +522,39 @@ function PromosPanel() {
 
   const removePhoto = () => {
     setForm(current => ({ ...current, photo: "" }));
+    setPhotoFile(null);
     setPhotoName("");
     setPhotoError("");
     if (photoRef.current) photoRef.current.value = "";
   };
 
-  const toggle = (id: number) => setPromos(p => p.map(pr => pr.id === id ? { ...pr, active: !pr.active } : pr));
-  const remove = (id: number) => setPromos(p => p.filter(pr => pr.id !== id));
+  const toggle = async (promo: Promo) => {
+    setActionError("");
+    try {
+      const { res, data } = await api(`/api/admin/promos/${promo.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ active: !promo.active }),
+      });
+      if (res.ok) setPromos(p => p.map(pr => (pr.id === promo.id ? (data as Promo) : pr)));
+      else setActionError(data.error ?? "Couldn't update the promo.");
+    } catch {
+      setActionError("Couldn't reach the server.");
+    }
+  };
+
+  const remove = async (promo: Promo) => {
+    if (!window.confirm(`Delete "${promo.title}"? This can't be undone.`)) return;
+    setActionError("");
+    try {
+      const { res, data } = await api(`/api/admin/promos/${promo.id}`, { method: "DELETE" });
+      if (res.ok) setPromos(p => p.filter(pr => pr.id !== promo.id));
+      else setActionError(data.error ?? "Couldn't delete the promo.");
+    } catch {
+      setActionError("Couldn't reach the server.");
+    }
+  };
+
   const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   return (
@@ -554,10 +627,13 @@ function PromosPanel() {
               )}
               {photoError && <div role="alert" style={{ color: "#b91c1c", fontSize: "12px", marginTop: "7px" }}>{photoError}</div>}
             </div>
-            <button className="btn-primary" type="submit">Save Promotion</button>
+            {formError && <div role="alert" style={{ color: "#b91c1c", fontSize: "13px", marginBottom: "12px" }}>{formError}</div>}
+            <button className="btn-primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save Promotion"}</button>
           </form>
         </div>
       )}
+
+      {actionError && <div role="alert" style={{ color: "#b91c1c", fontSize: "13px", marginBottom: "12px" }}>{actionError}</div>}
 
       <div style={{ display: "grid", gap: "14px" }}>
         {promos.map(promo => (
@@ -572,17 +648,23 @@ function PromosPanel() {
               )}
               <div>
                 <div style={{ fontFamily: "Poppins, sans-serif", fontWeight: 700, fontSize: "15px", color: "#1a2e4a" }}>{promo.title}</div>
-                <div style={{ fontSize: "13px", color: "#6b82a0", marginTop: "3px" }}>{promo.destination} · <strong style={{ color: "#5a8228" }}>{promo.discount}</strong> · Valid until {new Date(promo.validUntil).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}</div>
+                <div style={{ fontSize: "13px", color: "#6b82a0", marginTop: "3px" }}>
+                  {promo.destination && <>{promo.destination} · </>}
+                  {promo.discount && <><strong style={{ color: "#5a8228" }}>{promo.discount}</strong> · </>}
+                  {promo.validUntil
+                    ? `Valid until ${new Date(`${promo.validUntil}T00:00:00`).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" })}`
+                    : "No end date"}
+                </div>
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <span className="badge" style={{ background: promo.active ? "#edf4e0" : "#f1f5f9", color: promo.active ? "#5a8228" : "#94a3b8" }}>
                 {promo.active ? "Active" : "Inactive"}
               </span>
-              <button onClick={() => toggle(promo.id)} className="btn-outline" style={{ padding: "7px 14px", fontSize: "12px" }}>
+              <button onClick={() => toggle(promo)} className="btn-outline" style={{ padding: "7px 14px", fontSize: "12px" }}>
                 {promo.active ? "Deactivate" : "Activate"}
               </button>
-              <button onClick={() => remove(promo.id)} style={{ background: "#fef2f2", border: "none", borderRadius: "8px", padding: "8px", cursor: "pointer", color: "#b91c1c", transition: "background 0.2s" }}
+              <button onClick={() => remove(promo)} style={{ background: "#fef2f2", border: "none", borderRadius: "8px", padding: "8px", cursor: "pointer", color: "#b91c1c", transition: "background 0.2s" }}
                 onMouseEnter={e => (e.currentTarget.style.background = "#fee2e2")}
                 onMouseLeave={e => (e.currentTarget.style.background = "#fef2f2")}>
                 <Icon.Trash />
@@ -590,7 +672,13 @@ function PromosPanel() {
             </div>
           </div>
         ))}
-        {promos.length === 0 && (
+        {loading && (
+          <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#6b82a0" }}>Loading promos…</div>
+        )}
+        {loadError && (
+          <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#b91c1c" }}>{loadError}</div>
+        )}
+        {!loading && !loadError && promos.length === 0 && (
           <div className="section-card" style={{ textAlign: "center", padding: "48px", color: "#6b82a0" }}>
             <div style={{ fontSize: "14px" }}>No promotions yet. Add your first promo above.</div>
           </div>
