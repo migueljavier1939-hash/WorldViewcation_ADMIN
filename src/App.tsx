@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import logoImg from "@/imports/Logo.jpeg";
 import dashboardWelcomeImg from "@/imports/DashboardWelcome.jpeg";
 
@@ -175,19 +175,25 @@ function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const handle = (e: React.FormEvent) => {
+  const handle = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     if (!email || !password) { setError("Please fill in all fields."); return; }
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) onLogin(data as User);
+      else setError(data.error ?? "Sign in failed. Please try again.");
+    } catch {
+      setError("Couldn't reach the server. Please check your connection.");
+    } finally {
       setLoading(false);
-      if (email === "admin@viewcation.com" && password === "admin123") {
-        onLogin({ name: "Admin User", email, role: "Administrator" });
-      } else {
-        setError("Invalid credentials. Try admin@viewcation.com / admin123");
-      }
-    }, 800);
+    }
   };
 
   return (
@@ -222,7 +228,7 @@ function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
           <form onSubmit={handle}>
             <div style={{ marginBottom: "16px" }}>
               <label className="form-label">Email Address</label>
-              <input className="form-input" type="email" placeholder="admin@viewcation.com" value={email} onChange={e => setEmail(e.target.value)} />
+              <input className="form-input" type="email" placeholder="Enter your email" value={email} onChange={e => setEmail(e.target.value)} />
             </div>
             <div style={{ marginBottom: "24px" }}>
               <label className="form-label">Password</label>
@@ -246,9 +252,7 @@ function LoginPage({ onLogin }: { onLogin: (u: User) => void }) {
             </a>
           </div>
 
-          <div style={{ marginTop: "20px", padding: "12px 14px", background: "#f0f5fb", borderRadius: "10px", fontSize: "12px", color: "#6b82a0" }}>
-            <strong>Demo credentials:</strong> admin@viewcation.com / admin123
-          </div>
+          
         </div>
       </div>
     </div>
@@ -1065,12 +1069,25 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>("light");
 
   const login = (u: User) => { setUser(u); setView("dashboard"); };
-  const logout = () => { setUser(null); setView("login"); };
-
+  
   const dark = theme === "dark";
   const bg = dark ? "#0f1c2e" : "#f0f5fb";
   const mainBg = dark ? "#0f1c2e" : "#f0f5fb";
+  const [checking, setChecking] = useState(true);
+  const logout = async () => {
+    await fetch("/api/logout", { method: "POST" }).catch(() => {});
+    setUser(null);
+    setView("login");
+  };
 
+  useEffect(() => {
+    fetch("/api/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((u) => { if (u) { setUser(u); setView("dashboard"); } })
+      .catch(() => {})
+      .finally(() => setChecking(false));
+  }, []);
+  if (checking) return <div style={{ minHeight: "100vh", background: "#f0f5fb" }} />;
   if (!user || view === "login") return <LoginPage onLogin={login} />;
 
   return (
